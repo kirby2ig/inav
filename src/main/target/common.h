@@ -49,6 +49,10 @@
 #endif
 
 #if (FLASH_SIZE > 128)
+
+#define USE_UAV_INTERCONNECT
+#define USE_RX_UIB
+
 #define FIXED_WING_LANDING
 #define AUTOTUNE_FIXED_WING
 #define ASYNC_GYRO_PROCESSING

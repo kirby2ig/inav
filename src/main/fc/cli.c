@@ -150,7 +150,7 @@ static const char * const mixerNames[] = {
 
 // sync this with features_e
 static const char * const featureNames[] = {
-    "RX_PPM", "VBAT", "", "RX_SERIAL", "MOTOR_STOP",
+    "RX_PPM", "VBAT", "RX_UIB", "RX_SERIAL", "MOTOR_STOP",
     "SERVO_TILT", "SOFTSERIAL", "GPS", "",
     "", "TELEMETRY", "CURRENT_METER", "3D", "RX_PARALLEL_PWM",
     "RX_MSP", "RSSI_ADC", "LED_STRIP", "DASHBOARD", "",
@@ -169,7 +169,7 @@ static const char * const lookupTableBaroHardware[] = { "NONE", "AUTO", "BMP085"
 // sync with magSensor_e
 static const char * const lookupTableMagHardware[] = { "NONE", "AUTO", "HMC5883", "AK8975", "GPSMAG", "MAG3110", "AK8963", "IST8310", "FAKE"};
 // sycn with rangefinderType_e
-static const char * const lookupTableRangefinderHardware[] = { "NONE", "HCSR04", "SRF10", "HCSR04I2C", "VL53L0X"};
+static const char * const lookupTableRangefinderHardware[] = { "NONE", "HCSR04", "SRF10", "HCSR04I2C", "VL53L0X", "UIB"};
 // sync with pitotSensor_e
 static const char * const lookupTablePitotHardware[] = { "NONE", "AUTO", "MS4525", "ADC", "VIRTUAL", "FAKE"};
 

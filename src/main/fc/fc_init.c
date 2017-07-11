@@ -119,6 +119,7 @@
 #include "config/parameter_group.h"
 #include "config/parameter_group_ids.h"
 
+#include "uav_interconnect/uav_interconnect.h"
 
 #ifdef USE_HARDWARE_REVISION_DETECTION
 #include "hardware_revision.h"
@@ -528,12 +529,17 @@ void init(void)
     cmsDisplayPortRegister(displayPortMspInit());
 #endif
 
+#ifdef USE_UAV_INTERCONNECT
+    uavInterconnectBusInit();
+#endif
+
 #ifdef GPS
     if (feature(FEATURE_GPS)) {
         gpsInit();
         addBootlogEvent2(BOOT_EVENT_GPS_INIT_DONE, BOOT_EVENT_FLAGS_NONE);
     }
 #endif
+
 
 #ifdef NAV
     navigationInit();

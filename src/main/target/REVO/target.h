@@ -60,6 +60,8 @@
 #define USE_BARO_BMP280
 #define USE_BARO_MS5611
 
+#define USE_RANGEFINDER
+
 #define PITOT
 #define USE_PITOT_ADC
 //#define USE_PITOT_MS4525

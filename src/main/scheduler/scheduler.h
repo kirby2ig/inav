@@ -101,6 +101,9 @@ typedef enum {
 #ifdef CMS
     TASK_CMS,
 #endif
+#ifdef USE_UAV_INTERCONNECT
+    TASK_UAV_INTERCONNECT,
+#endif
     /* Count of real tasks */
     TASK_COUNT,
 
