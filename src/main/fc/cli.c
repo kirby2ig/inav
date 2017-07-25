@@ -167,7 +167,7 @@ static const char * const gyroNames[] = { "NONE", "AUTO", "MPU6050", "L3G4200D",
 // sync with baroSensor_e
 static const char * const lookupTableBaroHardware[] = { "NONE", "AUTO", "BMP085", "MS5611", "BMP280", "MS5607", "FAKE"};
 // sync with magSensor_e
-static const char * const lookupTableMagHardware[] = { "NONE", "AUTO", "HMC5883", "AK8975", "GPSMAG", "MAG3110", "AK8963", "IST8310", "FAKE"};
+static const char * const lookupTableMagHardware[] = { "NONE", "AUTO", "HMC5883", "AK8975", "GPSMAG", "MAG3110", "AK8963", "IST8310", "QMC5883", "FAKE"};
 // sycn with rangefinderType_e
 static const char * const lookupTableRangefinderHardware[] = { "NONE", "HCSR04", "SRF10", "HCSR04I2C"};
 // sync with pitotSensor_e
