@@ -19,6 +19,8 @@
 
 #include "common/streambuf.h"
 
+#define MSP_V2_FRAME_ID         255
+
 // return positive for ACK, negative on error, zero for no reply
 typedef enum {
     MSP_RESULT_ACK = 1,

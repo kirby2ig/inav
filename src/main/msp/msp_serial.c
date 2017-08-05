@@ -122,18 +122,25 @@ static uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int l
 
 #define JUMBO_FRAME_SIZE_LIMIT 255
 
-static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet)
+static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet, bool isMSPv2)
 {
     const int len = sbufBytesRemaining(&packet->buf);
     const int mspLen = len < JUMBO_FRAME_SIZE_LIMIT ? len : JUMBO_FRAME_SIZE_LIMIT;
-    uint8_t hdr[8] = {'$', 'M', packet->result == MSP_RESULT_ERROR ? '!' : '>', mspLen, packet->cmd};
+    uint8_t hdr[10] = {'$', 'M', packet->result == MSP_RESULT_ERROR ? '!' : '>', mspLen, isMSPv2 ? MSP_V2_FRAME_ID : packet->cmd};
     int hdrLen = 5;
 
 #define CHECKSUM_STARTPOS 3  // checksum starts from mspLen field
+
+    // JUMBO frame header goes first
     if (len >= JUMBO_FRAME_SIZE_LIMIT) {
-        hdrLen += 2;
-        hdr[5] = len & 0xff;
-        hdr[6] = (len >> 8) & 0xff;
+        hdr[hdrLen++] = len & 0xff;
+        hdr[hdrLen++] = (len >> 8) & 0xff;
+    }
+
+    // MSPv2 header goes next
+    if (isMSPv2) {
+        hdr[hdrLen++] = packet->cmd & 0xff;
+        hdr[hdrLen++] = (packet->cmd >> 8) & 0xff;
     }
 
     // We are allowed to send out the response if
@@ -159,6 +166,7 @@ static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet)
 static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspProcessCommandFnPtr mspProcessCommandFn)
 {
     static uint8_t outBuf[MSP_PORT_OUTBUF_SIZE];
+    bool isMSPv2 = (msp->cmdMSP == MSP_V2_FRAME_ID);
 
     mspPacket_t reply = {
         .buf = { .ptr = outBuf, .end = ARRAYEND(outBuf), },
@@ -173,12 +181,18 @@ static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspPr
         .result = 0,
     };
 
+    // Check for MSPv2 command
+    if (isMSPv2 && msp->dataSize >= 2) {
+        // First two bytes of payload is v2 command code
+        command.cmd = sbufReadU16(&command.buf);
+    }
+
     mspPostProcessFnPtr mspPostProcessFn = NULL;
     const mspResult_e status = mspProcessCommandFn(&command, &reply, &mspPostProcessFn);
 
     if (status != MSP_RESULT_NO_REPLY) {
         sbufSwitchToReader(&reply.buf, outBufHead); // change streambuf direction
-        mspSerialEncode(msp, &reply);
+        mspSerialEncode(msp, &reply, isMSPv2);
     }
 
     msp->c_state = MSP_IDLE;
@@ -251,7 +265,7 @@ int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen)
 
         sbufSwitchToReader(&push.buf, pushBuf);
 
-        ret = mspSerialEncode(mspPort, &push);
+        ret = mspSerialEncode(mspPort, &push, false);
     }
     return ret; // return the number of bytes written
 }
