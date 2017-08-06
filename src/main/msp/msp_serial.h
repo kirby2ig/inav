@@ -63,6 +63,7 @@ typedef struct __attribute__((packed)) {
 } mspHeaderJUMBO_t;
 
 typedef struct __attribute__((packed)) {
+    uint16_t size;
     uint16_t cmd;
 } mspHeaderV2_t;
 
@@ -74,7 +75,7 @@ typedef struct mspPort_s {
     mspState_e c_state;
     uint8_t inBuf[MSP_PORT_INBUF_SIZE];
     uint16_t cmdMSP;
-    bool isMSPv2;
+    mspVersion_e mspVersion;
     uint8_t offset;
     uint8_t dataSize;
     uint8_t checksum1;

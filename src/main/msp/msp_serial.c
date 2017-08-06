@@ -82,7 +82,7 @@ static bool mspSerialProcessReceivedData(mspPort_t *mspPort, uint8_t c)
         default:
         case MSP_IDLE:      // Waiting for '$' character
             if (c == '$') {
-                mspPort->isMSPv2 = false;
+                mspPort->mspVersion = MSP_V1;
                 mspPort->c_state = MSP_HEADER_START;
             }
             else {
@@ -118,7 +118,7 @@ static bool mspSerialProcessReceivedData(mspPort_t *mspPort, uint8_t c)
                 else if (hdr->cmd == MSP_V2_FRAME_ID) {
                     // MSPv1 payload must be big enough to hold V2 header + extra checksum
                     if (hdr->size >= sizeof(mspHeaderV2_t) + 1) {
-                        mspPort->isMSPv2 = true;
+                        mspPort->mspVersion = MSP_V2;
                         mspPort->c_state = MSP_HEADER_V2;
                     }
                     else {
@@ -155,10 +155,8 @@ static bool mspSerialProcessReceivedData(mspPort_t *mspPort, uint8_t c)
             mspPort->checksum1 ^= c;
             mspPort->checksum2 = crc8_dvb_s2(mspPort->checksum2, c);
             if (mspPort->offset == (sizeof(mspHeaderV2_t) + sizeof(mspHeaderV1_t))) {
-                mspHeaderV1_t * hdrv1 = (mspHeaderV1_t *)&mspPort->inBuf[0];
                 mspHeaderV2_t * hdrv2 = (mspHeaderV2_t *)&mspPort->inBuf[sizeof(mspHeaderV1_t)];
-
-                mspPort->dataSize = hdrv1->size - sizeof(mspHeaderV2_t) - 1;    // V1 size - V1 header - extra checksum byte
+                mspPort->dataSize = hdrv2->size;
                 mspPort->cmdMSP = hdrv2->cmd;
                 mspPort->offset = 0;                // re-use buffer
                 mspPort->c_state = mspPort->dataSize > 0 ? MSP_PAYLOAD_V2 : MSP_CHECKSUM_V2;
@@ -196,84 +194,101 @@ static uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int l
     return checksum;
 }
 
-static uint8_t mspSerialChecksumBufV2(uint8_t checksum, const uint8_t *data, int len)
+#define JUMBO_FRAME_SIZE_LIMIT 255
+static int mspSerialSendFrame(mspPort_t *msp, const uint8_t * hdr, int hdrLen, const uint8_t * data, int dataLen, const uint8_t * crc, int crcLen)
 {
-    while (len-- > 0) {
-        checksum = crc8_dvb_s2(checksum, *data++);
-    }
-    return checksum;
+    // We are allowed to send out the response if
+    //  a) TX buffer is completely empty (we are talking to well-behaving party that follows request-response scheduling;
+    //     this allows us to transmit jumbo frames bigger than TX buffer (serialWriteBuf will block, but for jumbo frames we don't care)
+    //  b) Response fits into TX buffer
+    const int totalFrameLength = hdrLen + dataLen + crcLen;
+    if (!isSerialTransmitBufferEmpty(msp->port) && ((int)serialTxBytesFree(msp->port) < totalFrameLength))
+        return 0;
+
+    // Transmit frame
+    serialBeginWrite(msp->port);
+    serialWriteBuf(msp->port, hdr, hdrLen);
+    serialWriteBuf(msp->port, data, dataLen);
+    serialWriteBuf(msp->port, crc, crcLen);
+    serialEndWrite(msp->port);
+
+    return totalFrameLength;
 }
 
-#define JUMBO_FRAME_SIZE_LIMIT 255
-
-static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet, bool isMSPv2)
+static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet, mspVersion_e mspVersion)
 {
     const int dataLen = sbufBytesRemaining(&packet->buf);
-    const int v1PayloadSize = isMSPv2 ? dataLen + (int)sizeof(mspHeaderV2_t) + 1 : dataLen;
-    uint8_t hdrBuf[10] = {'$', 'M', packet->result == MSP_RESULT_ERROR ? '!' : '>'};
+    uint8_t hdrBuf[16] = {'$', 'M', packet->result == MSP_RESULT_ERROR ? '!' : '>'};
+    uint8_t crcBuf[2];
     int hdrLen = 3;
+    int crcLen = 0;
 
     // Reserve space for V1 header
     mspHeaderV1_t *     hdrV1 = (mspHeaderV1_t *)&hdrBuf[hdrLen];
     hdrLen += sizeof(mspHeaderV1_t);
 
-    // Add JUMBO-frame header if necessary
-    if (v1PayloadSize >= JUMBO_FRAME_SIZE_LIMIT) {
-        mspHeaderJUMBO_t * hdrJUMBO = (mspHeaderJUMBO_t *)&hdrBuf[hdrLen];
-        hdrLen += sizeof(mspHeaderJUMBO_t);
+    #define V1_CHECKSUM_STARTPOS 3
+    if (mspVersion == MSP_V1) {
+        hdrV1->cmd = packet->cmd;
 
-        hdrV1->size = JUMBO_FRAME_SIZE_LIMIT;
-        hdrJUMBO->size = v1PayloadSize;
-    }
-    else {
-        hdrV1->size = v1PayloadSize;
-    }
+        // Add JUMBO-frame header if necessary
+        if (dataLen >= JUMBO_FRAME_SIZE_LIMIT) {
+            mspHeaderJUMBO_t * hdrJUMBO = (mspHeaderJUMBO_t *)&hdrBuf[hdrLen];
+            hdrLen += sizeof(mspHeaderJUMBO_t);
 
-    // Add V2 header if this should be a V2 packet and send packet-
-    mspHeaderV2_t * hdrV2 = NULL;
-    if (isMSPv2) {
-        hdrV2 = (mspHeaderV2_t *)&hdrBuf[hdrLen];
+            hdrV1->size = JUMBO_FRAME_SIZE_LIMIT;
+            hdrJUMBO->size = dataLen;
+        }
+        else {
+            hdrV1->size = dataLen;
+        }
+
+        // Pre-calculate CRC
+        crcBuf[crcLen] = mspSerialChecksumBuf(0, hdrBuf + V1_CHECKSUM_STARTPOS, hdrLen - V1_CHECKSUM_STARTPOS);
+        crcBuf[crcLen] = mspSerialChecksumBuf(crcBuf[crcLen], sbufPtr(&packet->buf), dataLen);
+        crcLen++;
+    }
+    else if (mspVersion == MSP_V2) {
+        mspHeaderV2_t * hdrV2 = (mspHeaderV2_t *)&hdrBuf[hdrLen];
         hdrLen += sizeof(mspHeaderV2_t);
 
+        const int v1PayloadSize = sizeof(mspHeaderV2_t) + dataLen + 1;
         hdrV1->cmd = MSP_V2_FRAME_ID;
+
+        // Add JUMBO-frame header if necessary
+        if (v1PayloadSize >= JUMBO_FRAME_SIZE_LIMIT) {
+            mspHeaderJUMBO_t * hdrJUMBO = (mspHeaderJUMBO_t *)&hdrBuf[hdrLen];
+            hdrLen += sizeof(mspHeaderJUMBO_t);
+
+            hdrV1->size = JUMBO_FRAME_SIZE_LIMIT;
+            hdrJUMBO->size = v1PayloadSize;
+        }
+        else {
+            hdrV1->size = v1PayloadSize;
+        }
+
+        // Fill V2 header
         hdrV2->cmd = packet->cmd;
+        hdrV2->size = dataLen;
+
+        // V2 CRC: only V2 header + data payload
+        crcBuf[crcLen] = crc8_dvb_s2_buf(0, (uint8_t *)hdrV2, sizeof(mspHeaderV2_t));
+        crcBuf[crcLen] = crc8_dvb_s2_buf(crcBuf[crcLen], sbufPtr(&packet->buf), dataLen);
+        crcLen++;
+
+        // V1 CRC: All headers + data payload + V2 CRC byte
+        crcBuf[crcLen] = mspSerialChecksumBuf(0, hdrBuf + V1_CHECKSUM_STARTPOS, hdrLen - V1_CHECKSUM_STARTPOS);
+        crcBuf[crcLen] = mspSerialChecksumBuf(crcBuf[crcLen], sbufPtr(&packet->buf), dataLen);
+        crcBuf[crcLen] = mspSerialChecksumBuf(crcBuf[crcLen], crcBuf, crcLen);
+        crcLen++;
     }
     else {
-        hdrV1->cmd = packet->cmd;
-    }
-
-    // We are allowed to send out the response if
-    //  a) TX buffer is completely empty (we are talking to well-behaving party that follows request-response scheduling;
-    //     this allows us to transmit jumbo frames bigger than TX buffer (serialWriteBuf will block, but for jumbo frames we don't care)
-    //  b) Response fits into TX buffer
-    const int totalFrameLength = isMSPv2 ? hdrLen + dataLen + 2 : hdrLen + dataLen + 1;
-    if (!isSerialTransmitBufferEmpty(msp->port) && ((int)serialTxBytesFree(msp->port) < totalFrameLength))
+        // Shouldn't get here
         return 0;
-
-    #define V1_CHECKSUM_STARTPOS 3
-
-    // Transmit headers
-    serialBeginWrite(msp->port);
-    serialWriteBuf(msp->port, hdrBuf, hdrLen);
-
-    // Now calculate V1 checksum and send data payload
-    uint8_t checksum1 = mspSerialChecksumBuf(0, hdrBuf + V1_CHECKSUM_STARTPOS, hdrLen - V1_CHECKSUM_STARTPOS);
-    if (dataLen > 0) {
-        serialWriteBuf(msp->port, sbufPtr(&packet->buf), dataLen);
-        checksum1 = mspSerialChecksumBuf(checksum1, sbufPtr(&packet->buf), dataLen);
     }
 
-    // For MSPv2 we need to send additional checksum - V2 header + data payload. Note that V2 checksum is part of V1 payload
-    if (isMSPv2) {
-        uint8_t checksum2 = mspSerialChecksumBufV2(0, (uint8_t *)hdrV2, sizeof(mspHeaderV2_t));
-        checksum2 = mspSerialChecksumBufV2(checksum2, sbufPtr(&packet->buf), dataLen);
-        checksum1 ^= checksum2;
-        serialWriteBuf(msp->port, &checksum2, 1);
-    }
-
-    serialWriteBuf(msp->port, &checksum1, 1);
-    serialEndWrite(msp->port);
-    return totalFrameLength; // header, data, and checksum
+    // Send the frame
+    return mspSerialSendFrame(msp, hdrBuf, hdrLen, sbufPtr(&packet->buf), dataLen, crcBuf, crcLen);
 }
 
 static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspProcessCommandFnPtr mspProcessCommandFn)
@@ -298,7 +313,7 @@ static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspPr
 
     if (status != MSP_RESULT_NO_REPLY) {
         sbufSwitchToReader(&reply.buf, outBufHead); // change streambuf direction
-        mspSerialEncode(msp, &reply, msp->isMSPv2);
+        mspSerialEncode(msp, &reply, msp->mspVersion);
     }
 
     msp->c_state = MSP_IDLE;
@@ -371,7 +386,7 @@ int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen)
 
         sbufSwitchToReader(&push.buf, pushBuf);
 
-        ret = mspSerialEncode(mspPort, &push, false);
+        ret = mspSerialEncode(mspPort, &push, MSP_V1);
     }
     return ret; // return the number of bytes written
 }
