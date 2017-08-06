@@ -27,9 +27,11 @@ typedef enum {
     MSP_HEADER_START,
     MSP_HEADER_M,
     MSP_HEADER_V1,
-    MSP_HEADER_V2,
     MSP_PAYLOAD_V1,
+    MSP_CHECKSUM_V1,
+    MSP_HEADER_V2,
     MSP_PAYLOAD_V2,
+    MSP_CHECKSUM_V2,
     MSP_COMMAND_RECEIVED
 } mspState_e;
 
@@ -57,6 +59,10 @@ typedef struct __attribute__((packed)) {
 } mspHeaderV1_t;
 
 typedef struct __attribute__((packed)) {
+    uint16_t size;
+} mspHeaderJUMBO_t;
+
+typedef struct __attribute__((packed)) {
     uint16_t cmd;
 } mspHeaderV2_t;
 
@@ -71,7 +77,8 @@ typedef struct mspPort_s {
     bool isMSPv2;
     uint8_t offset;
     uint8_t dataSize;
-    uint8_t checksum;
+    uint8_t checksum1;
+    uint8_t checksum2;
 } mspPort_t;
 
 
