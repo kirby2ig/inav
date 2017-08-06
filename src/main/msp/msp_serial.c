@@ -23,6 +23,7 @@
 
 #include "common/streambuf.h"
 #include "common/utils.h"
+#include "common/maths.h"
 
 #include "drivers/serial.h"
 
@@ -75,40 +76,101 @@ void mspSerialReleasePortIfAllocated(serialPort_t *serialPort)
 
 static bool mspSerialProcessReceivedData(mspPort_t *mspPort, uint8_t c)
 {
-    if (mspPort->c_state == MSP_IDLE) {
-        if (c == '$') {
-            mspPort->c_state = MSP_HEADER_START;
-        } else {
-            return false;
-        }
-    } else if (mspPort->c_state == MSP_HEADER_START) {
-        mspPort->c_state = (c == 'M') ? MSP_HEADER_M : MSP_IDLE;
-    } else if (mspPort->c_state == MSP_HEADER_M) {
-        mspPort->c_state = (c == '<') ? MSP_HEADER_ARROW : MSP_IDLE;
-    } else if (mspPort->c_state == MSP_HEADER_ARROW) {
-        if (c > MSP_PORT_INBUF_SIZE) {
-            mspPort->c_state = MSP_IDLE;
-        } else {
-            mspPort->dataSize = c;
-            mspPort->offset = 0;
-            mspPort->checksum = 0;
-            mspPort->checksum ^= c;
-            mspPort->c_state = MSP_HEADER_SIZE;
-        }
-    } else if (mspPort->c_state == MSP_HEADER_SIZE) {
-        mspPort->cmdMSP = c;
-        mspPort->checksum ^= c;
-        mspPort->c_state = MSP_HEADER_CMD;
-    } else if (mspPort->c_state == MSP_HEADER_CMD && mspPort->offset < mspPort->dataSize) {
-        mspPort->checksum ^= c;
-        mspPort->inBuf[mspPort->offset++] = c;
-    } else if (mspPort->c_state == MSP_HEADER_CMD && mspPort->offset >= mspPort->dataSize) {
-        if (mspPort->checksum == c) {
-            mspPort->c_state = MSP_COMMAND_RECEIVED;
-        } else {
-            mspPort->c_state = MSP_IDLE;
-        }
+    switch (mspPort->c_state) {
+        default:
+        case MSP_IDLE:      // Waiting for '$' character
+            if (c == '$') {
+                mspPort->isMSPv2 = false;
+                mspPort->c_state = MSP_HEADER_START;
+            }
+            else {
+                return false;
+            }
+            break;
+
+        case MSP_HEADER_START:  // Waiting for 'M'
+            mspPort->c_state = (c == 'M') ? MSP_HEADER_M : MSP_IDLE;
+            break;
+
+        case MSP_HEADER_M:      // Waiting for '<'
+            if (c == '<') {
+                mspPort->offset = 0;
+                mspPort->c_state = MSP_HEADER_V1;
+            }
+            else {
+                mspPort->c_state = MSP_IDLE;
+            }
+            break;
+
+        case MSP_HEADER_V1:     // Now receive v1 header (size/cmd), this is already checksummable
+            mspPort->inBuf[mspPort->offset++] = c;
+            if (mspPort->offset == sizeof(mspHeaderV1_t)) {
+                mspHeaderV1_t * hdr = (mspHeaderV1_t *)&mspPort->inBuf[0];
+                // Check incoming buffer size limit
+                if (hdr->size > MSP_PORT_INBUF_SIZE) {
+                    mspPort->c_state = MSP_IDLE;
+                }
+                else if (hdr->cmd == MSP_V2_FRAME_ID) {
+                    mspPort->isMSPv2 = true;
+                    mspPort->c_state = MSP_HEADER_V2;
+                }
+                else {
+                    mspPort->checksum = mspPort->inBuf[0] ^ mspPort->inBuf[1];
+                    mspPort->dataSize = hdr->size;
+                    mspPort->cmdMSP = hdr->cmd;
+                    mspPort->offset = 0;
+                    mspPort->c_state = MSP_PAYLOAD_V1;
+                }
+            }
+            break;
+
+        case MSP_HEADER_V2:     // Now receive v1 header (size/cmd), this is already checksummable
+            mspPort->inBuf[mspPort->offset++] = c;
+            if (mspPort->offset == sizeof(mspHeaderV2_t)) {
+                mspHeaderV1_t * hdrv1 = (mspHeaderV1_t *)&mspPort->inBuf[0];
+                mspHeaderV2_t * hdrv2 = (mspHeaderV2_t *)&mspPort->inBuf[sizeof(mspHeaderV1_t)];
+                
+                mspPort->checksum = 0;
+                for (unsigned i = 0; i < sizeof(mspHeaderV1_t) + sizeof(mspHeaderV2_t); i++) {
+                    mspPort->checksum = crc8_dvb_s2(mspPort->checksum, mspPort->inBuf[i]);
+                }
+
+                mspPort->dataSize = hdrv1->size - sizeof(mspHeaderV2_t);
+                mspPort->cmdMSP = hdrv2->cmd;
+                mspPort->offset = 0;
+                mspPort->c_state = MSP_PAYLOAD_V2;
+            }
+            break;
+
+        case MSP_PAYLOAD_V1:
+            if (mspPort->offset < mspPort->dataSize) {
+                mspPort->checksum ^= c;
+                mspPort->inBuf[mspPort->offset++] = c;
+            }
+            else {
+                if (mspPort->checksum == c) {
+                    mspPort->c_state = MSP_COMMAND_RECEIVED;
+                } else {
+                    mspPort->c_state = MSP_IDLE;
+                }
+            }
+            break;
+
+        case MSP_PAYLOAD_V2:
+            if (mspPort->offset < mspPort->dataSize) {
+                mspPort->checksum = crc8_dvb_s2(mspPort->checksum, c);
+                mspPort->inBuf[mspPort->offset++] = c;
+            }
+            else {
+                if (mspPort->checksum == c) {
+                    mspPort->c_state = MSP_COMMAND_RECEIVED;
+                } else {
+                    mspPort->c_state = MSP_IDLE;
+                }
+            }
+            break;
     }
+
     return true;
 }
 
@@ -166,7 +228,6 @@ static int mspSerialEncode(mspPort_t *msp, mspPacket_t *packet, bool isMSPv2)
 static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspProcessCommandFnPtr mspProcessCommandFn)
 {
     static uint8_t outBuf[MSP_PORT_OUTBUF_SIZE];
-    bool isMSPv2 = (msp->cmdMSP == MSP_V2_FRAME_ID);
 
     mspPacket_t reply = {
         .buf = { .ptr = outBuf, .end = ARRAYEND(outBuf), },
@@ -181,18 +242,12 @@ static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspPr
         .result = 0,
     };
 
-    // Check for MSPv2 command
-    if (isMSPv2 && msp->dataSize >= 2) {
-        // First two bytes of payload is v2 command code
-        command.cmd = sbufReadU16(&command.buf);
-    }
-
     mspPostProcessFnPtr mspPostProcessFn = NULL;
     const mspResult_e status = mspProcessCommandFn(&command, &reply, &mspPostProcessFn);
 
     if (status != MSP_RESULT_NO_REPLY) {
         sbufSwitchToReader(&reply.buf, outBufHead); // change streambuf direction
-        mspSerialEncode(msp, &reply, isMSPv2);
+        mspSerialEncode(msp, &reply, msp->isMSPv2);
     }
 
     msp->c_state = MSP_IDLE;
